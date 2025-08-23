@@ -1,11 +1,28 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from typing import List
+import json
 
 class Settings(BaseSettings):
+    API_TOKEN: str
+    PROJECT_NAME: str = "CvxViz"
     API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "ConvexOpt API"
-    API_TOKEN: str = "changeme123"  # Load from .env
+    ENV: str = "dev"
+    # Keep env as a plain string to avoid pydantic trying to JSON-decode a List[str]
+    ALLOWED_ORIGINS_RAW: str = "http://localhost:3000"
 
-    class Config:
-        env_file = ".env"
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+
+    @property
+    def ALLOWED_ORIGINS(self) -> List[str]:
+        raw = (self.ALLOWED_ORIGINS_RAW or "").strip()
+        # If user provides JSON, accept it; otherwise split by comma
+        if raw.startswith("[") and raw.endswith("]"):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed]
+            except Exception:
+                pass
+        return [s.strip() for s in raw.split(",") if s.strip()]
 
 settings = Settings()
