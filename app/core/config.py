@@ -9,8 +9,8 @@ class Settings(BaseSettings):
     ENV: str = "dev"
     # Keep env as a plain string to avoid pydantic trying to JSON-decode a List[str]
     ALLOWED_ORIGINS_RAW: str = "http://localhost:3000"
-
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    TIMEOUT_SECONDS: int = 8
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @property
     def ALLOWED_ORIGINS(self) -> List[str]:

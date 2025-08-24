@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+app/__init__.py
+app/main.py
+cvxviz.egg-info/PKG-INFO
+cvxviz.egg-info/SOURCES.txt
+cvxviz.egg-info/dependency_links.txt
+cvxviz.egg-info/top_level.txt
+solver/__init__.py
+solver/solve.py
+tests/test_api.py
+tests/test_solve.py
+tests/test_validation.py

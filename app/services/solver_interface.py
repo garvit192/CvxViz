@@ -1,7 +1,34 @@
+import math
 from app.models.schema import ProblemInput, ProblemResult
 from solver.solve import solve_lp
+from app.services.validators import validate_problem
+from app.core.errors import BadInput
+
+def _finite(x) -> bool:
+    try:
+        # bool for ints; convert others to float
+        return math.isfinite(float(x))
+    except Exception:
+        # if it can't be converted, treat as finite (let API return it)
+        return True
+
+def _sanitize_solution(sol):
+    if not isinstance(sol, list):
+        return sol
+    out = []
+    for x in sol:
+        if isinstance(x, float) and not _finite(x):
+            out.append(None)
+        else:
+            out.append(x)
+    return out
 
 def solve_problem(p: ProblemInput) -> ProblemResult:
+    try:
+        validate_problem(p)
+    except ValueError as e:
+        raise BadInput(str(e))
+
     res = solve_lp(
         c=p.c,
         Q=p.Q,
@@ -10,9 +37,18 @@ def solve_problem(p: ProblemInput) -> ProblemResult:
         bounds=p.bounds,
         sense=p.sense,
     )
+
+    status = res.get("status", "unknown")
+    obj = res.get("objective_value")
+    # JSON-safe objective: replace inf/-inf/nan with None
+    if isinstance(obj, float) and not _finite(obj):
+        obj = None
+
+    sol = _sanitize_solution(res.get("solution"))
+
     return ProblemResult(
-        status=res.get("status", "unknown"),
-        objective_value=res.get("objective_value"),
-        solution=res.get("solution"),
+        status=status,
+        objective_value=obj,
+        solution=sol,
         message=res.get("message"),
     )

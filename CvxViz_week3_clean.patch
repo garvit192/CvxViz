@@ -1,0 +1,284 @@
+diff -ruN old/.env.example new/.env.example
+--- old/.env.example	2025-08-23 13:51:28.346467674 +0000
++++ new/.env.example	2025-08-23 13:51:29.145360820 +0000
+@@ -1 +1,2 @@
+-API_TOKEN=changeme123
+\ No newline at end of file
++API_TOKEN=changeme123
++TIMEOUT_SECONDS=8
+diff -ruN old/app/api/v1/routes.py new/app/api/v1/routes.py
+--- old/app/api/v1/routes.py	2025-08-23 13:51:28.392235988 +0000
++++ new/app/api/v1/routes.py	2025-08-23 13:51:29.148381974 +0000
+@@ -1,14 +1,31 @@
+ from fastapi import APIRouter, Depends
++from slowapi.decorators import limit
++import asyncio
++import structlog
++
++from app.core.config import settings
++from app.core.security import RequireAPIKey
+ from app.models.schema import ProblemInput, ProblemResult
+ from app.services.solver_interface import solve_problem
+-from app.core.security import verify_api_key
+ 
+ router = APIRouter()
+-
+-@router.post("/solve", response_model=ProblemResult, dependencies=[Depends(verify_api_key)])
+-def solve_optimization_problem(input_data: ProblemInput):
+-    return solve_problem(input_data)
++logger = structlog.get_logger()
+ 
+ @router.get("/health")
+-def health_check():
+-    return {"status": "ok"}
+\ No newline at end of file
++def health():
++    return {"status": "ok"}
++
++@router.post("/solve", response_model=ProblemResult, dependencies=[RequireAPIKey])
++@limit("10/minute")
++async def solve_endpoint(payload: ProblemInput):
++    logger.info("solve_start", sense=payload.sense)
++    try:
++        res = await asyncio.wait_for(
++            asyncio.to_thread(solve_problem, payload),
++            timeout=settings.TIMEOUT_SECONDS,
++        )
++    except asyncio.TimeoutError:
++        # Convert to 504 via global handler
++        raise TimeoutError()
++    logger.info("solve_done", status=res.status, obj=res.objective_value)
++    return res
+diff -ruN old/app/core/config.py new/app/core/config.py
+--- old/app/core/config.py	2025-08-23 13:51:28.358793899 +0000
++++ new/app/core/config.py	2025-08-23 13:51:29.146409788 +0000
+@@ -1,11 +1,31 @@
+-from pydantic_settings import BaseSettings
++from pydantic_settings import BaseSettings, SettingsConfigDict
++from typing import List
++import json
+ 
+ class Settings(BaseSettings):
++    API_TOKEN: str
++    PROJECT_NAME: str = "CvxViz"
+     API_V1_STR: str = "/api/v1"
+-    PROJECT_NAME: str = "ConvexOpt API"
+-    API_TOKEN: str = "changeme123"  # Load from .env
++    ENV: str = "dev"
++    ALLOWED_ORIGINS_RAW: str = "http://localhost:3000"
++    TIMEOUT_SECONDS: int = 8
+ 
+-    class Config:
+-        env_file = ".env"
++    model_config = SettingsConfigDict(
++        env_file=".env",
++        env_file_encoding="utf-8",
++        extra="ignore",
++    )
++
++    @property
++    def ALLOWED_ORIGINS(self) -> List[str]:
++        raw = (self.ALLOWED_ORIGINS_RAW or "").strip()
++        if raw.startswith("[") and raw.endswith("]"):
++            try:
++                parsed = json.loads(raw)
++                if isinstance(parsed, list):
++                    return [str(x).strip() for x in parsed]
++            except Exception:
++                pass
++        return [s.strip() for s in raw.split(",") if s.strip()]
+ 
+ settings = Settings()
+diff -ruN old/app/core/errors.py new/app/core/errors.py
+--- old/app/core/errors.py	1970-01-01 00:00:00.000000000 +0000
++++ new/app/core/errors.py	2025-08-23 13:51:29.146665660 +0000
+@@ -0,0 +1,19 @@
++from fastapi import Request
++from fastapi.responses import JSONResponse
++from starlette import status
++from slowapi.errors import RateLimitExceeded
++
++class BadInput(Exception):
++    def __init__(self, detail: str): self.detail = detail
++
++async def bad_input_handler(request: Request, exc: BadInput):
++    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
++                        content={"detail": exc.detail})
++
++async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
++    return JSONResponse(status_code=status.HTTP_429_TOO_MANY_REQUESTS,
++                        content={"detail": "Rate limit exceeded"})
++
++async def timeout_handler(request: Request, exc: TimeoutError):
++    return JSONResponse(status_code=status.HTTP_504_GATEWAY_TIMEOUT,
++                        content={"detail": "Request timed out"})
+diff -ruN old/app/core/logging.py new/app/core/logging.py
+--- old/app/core/logging.py	1970-01-01 00:00:00.000000000 +0000
++++ new/app/core/logging.py	2025-08-23 13:51:29.147032887 +0000
+@@ -0,0 +1,17 @@
++import logging, sys, structlog
++
++def setup_logging():
++    timestamper = structlog.processors.TimeStamper(fmt="iso")
++    structlog.configure(
++        processors=[
++            structlog.contextvars.merge_contextvars,
++            timestamper,
++            structlog.processors.add_log_level,
++            structlog.processors.dict_tracebacks,
++            structlog.processors.JSONRenderer(),
++        ],
++        logger_factory=structlog.stdlib.LoggerFactory(),
++        wrapper_class=structlog.stdlib.BoundLogger,
++        cache_logger_on_first_use=True,
++    )
++    logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+diff -ruN old/app/main.py new/app/main.py
+--- old/app/main.py	2025-08-23 13:51:28.347940103 +0000
++++ new/app/main.py	2025-08-23 13:51:29.148095507 +0000
+@@ -1,16 +1,34 @@
+ from fastapi import FastAPI
+ from fastapi.middleware.cors import CORSMiddleware
+-from app.api.v1.routes import router as api_router
++from slowapi.middleware import SlowAPIMiddleware
++from slowapi.errors import RateLimitExceeded
++
+ from app.core.config import settings
++from app.api.v1.routes import router as v1_router
++from app.core.logging import setup_logging
++from app.core.errors import BadInput, bad_input_handler, rate_limit_handler, timeout_handler
+ 
+ app = FastAPI(title=settings.PROJECT_NAME)
+ 
++# Structured logging
++setup_logging()
++
++# Rate limiting middleware
++app.add_middleware(SlowAPIMiddleware)
++
++# CORS: permissive in dev, restrict via ALLOWED_ORIGINS in .env
+ app.add_middleware(
+     CORSMiddleware,
+-    allow_origins=["*"],  # Restrict in production
++    allow_origins=["*"] if settings.ENV == "dev" else settings.ALLOWED_ORIGINS,
+     allow_credentials=True,
+     allow_methods=["*"],
+     allow_headers=["*"],
+ )
+ 
+-app.include_router(api_router, prefix=settings.API_V1_STR)
+\ No newline at end of file
++# Mount v1 routes
++app.include_router(v1_router, prefix=settings.API_V1_STR)
++
++# Exception handlers
++app.add_exception_handler(BadInput, bad_input_handler)
++app.add_exception_handler(RateLimitExceeded, rate_limit_handler)
++app.add_exception_handler(TimeoutError, timeout_handler)
+diff -ruN old/app/services/solver_interface.py new/app/services/solver_interface.py
+--- old/app/services/solver_interface.py	2025-08-23 13:51:28.361910604 +0000
++++ new/app/services/solver_interface.py	2025-08-23 13:51:29.147801184 +0000
+@@ -1,24 +1,24 @@
+ from app.models.schema import ProblemInput, ProblemResult
+ from solver.solve import solve_lp
++from app.services.validators import validate_problem
++from app.core.errors import BadInput
+ 
+-import math
+-
+-def solve_problem(problem_input: ProblemInput) -> ProblemResult:
+-    result = solve_lp(
+-        c=problem_input.c,
+-        Q=problem_input.Q,
+-        A=problem_input.A,
+-        b=problem_input.b,
+-        sense=problem_input.sense
++def solve_problem(p: ProblemInput) -> ProblemResult:
++    try:
++        validate_problem(p)
++    except ValueError as e:
++        raise BadInput(str(e))
++    res = solve_lp(
++        c=p.c,
++        Q=p.Q,
++        A=p.A,
++        b=p.b,
++        bounds=p.bounds,
++        sense=p.sense,
+     )
+-
+-    # Safely handle inf/nan for JSON compliance
+-    obj_val = result.get("objective_value", None)
+-    if obj_val is not None and (math.isinf(obj_val) or math.isnan(obj_val)):
+-        obj_val = None  # or use a string like "Infinity"
+-
+     return ProblemResult(
+-        status=result.get("status", "unknown"),
+-        objective_value=obj_val,
+-        solution=result.get("solution", [])
+-    )
+\ No newline at end of file
++        status=res.get("status", "unknown"),
++        objective_value=res.get("objective_value"),
++        solution=res.get("solution"),
++        message=res.get("message"),
++    )
+diff -ruN old/app/services/validators.py new/app/services/validators.py
+--- old/app/services/validators.py	1970-01-01 00:00:00.000000000 +0000
++++ new/app/services/validators.py	2025-08-23 13:51:29.147456794 +0000
+@@ -0,0 +1,30 @@
++import math
++from app.models.schema import ProblemInput
++
++def _has_nan_inf(arr):
++    for v in arr:
++        if v is None:
++            return True
++        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
++            return True
++    return False
++
++def validate_problem(p: ProblemInput):
++    if not p.c or len(p.c) == 0:
++        raise ValueError("c (objective) is required")
++    n = len(p.c)
++    if p.A:
++        for row in p.A:
++            if len(row) != n:
++                raise ValueError("Each row of A must have len(c) columns")
++    if p.b and p.A and len(p.b) != len(p.A):
++        raise ValueError("len(b) must equal number of rows in A")
++    if p.bounds and len(p.bounds) != n:
++        raise ValueError("len(bounds) must equal len(c)")
++    if _has_nan_inf(p.c):
++        raise ValueError("c contains NaN/Inf")
++    if p.b and _has_nan_inf(p.b):
++        raise ValueError("b contains NaN/Inf")
++    if p.Q:
++        if len(p.Q) != n or any(len(row) != n for row in p.Q):
++            raise ValueError("Q must be square with size len(c)")
+diff -ruN old/requirements.txt new/requirements.txt
+--- old/requirements.txt	2025-08-23 13:51:28.343956246 +0000
++++ new/requirements.txt	2025-08-23 13:51:29.144479721 +0000
+@@ -28,3 +28,6 @@
+ typing-inspection==0.4.1
+ typing_extensions==4.14.1
+ uvicorn==0.35.0
++pydantic-settings
++structlog==24.4.0
++slowapi==0.1.9
+diff -ruN old/tests/test_validation.py new/tests/test_validation.py
+--- old/tests/test_validation.py	1970-01-01 00:00:00.000000000 +0000
++++ new/tests/test_validation.py	2025-08-23 13:51:29.148684172 +0000
+@@ -0,0 +1,11 @@
++from starlette.testclient import TestClient
++from app.main import app
++from app.core.config import settings
++
++client = TestClient(app)
++
++def test_bad_shapes_422():
++    payload = {"c":[1,2,3], "A":[[1,1]], "b":[1], "sense":"minimize"}
++    r = client.post(f"{settings.API_V1_STR}/solve", json=payload, headers={"X-API-Key": settings.API_TOKEN})
++    assert r.status_code == 422
++    assert "detail" in r.json()

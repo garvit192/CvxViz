@@ -28,3 +28,6 @@ starlette==0.47.2
 typing-inspection==0.4.1
 typing_extensions==4.14.1
 uvicorn==0.35.0
+pydantic-settings
+structlog==24.4.0
+slowapi==0.1.9
