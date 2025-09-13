@@ -6,10 +6,8 @@ from app.core.errors import BadInput
 
 def _finite(x) -> bool:
     try:
-        # bool for ints; convert others to float
         return math.isfinite(float(x))
     except Exception:
-        # if it can't be converted, treat as finite (let API return it)
         return True
 
 def _sanitize_solution(sol):
@@ -40,7 +38,6 @@ def solve_problem(p: ProblemInput) -> ProblemResult:
 
     status = res.get("status", "unknown")
     obj = res.get("objective_value")
-    # JSON-safe objective: replace inf/-inf/nan with None
     if isinstance(obj, float) and not _finite(obj):
         obj = None
 

@@ -7,15 +7,14 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "CvxViz"
     API_V1_STR: str = "/api/v1"
     ENV: str = "dev"
-    # Keep env as a plain string to avoid pydantic trying to JSON-decode a List[str]
     ALLOWED_ORIGINS_RAW: str = "http://localhost:3000"
     TIMEOUT_SECONDS: int = 8
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    DATABASE_URL: str = "sqlite:///./cvxviz.db"
 
     @property
     def ALLOWED_ORIGINS(self) -> List[str]:
         raw = (self.ALLOWED_ORIGINS_RAW or "").strip()
-        # If user provides JSON, accept it; otherwise split by comma
         if raw.startswith("[") and raw.endswith("]"):
             try:
                 parsed = json.loads(raw)

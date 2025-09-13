@@ -51,7 +51,6 @@ def test_valid_solve_minimize_simple():
     assert r.status_code < 400, r.text
     body = r.json()
     assert "status" in body
-    # Don't over-specify solver results; just ensure structure is present
     assert "objective_value" in body
     assert "solution" in body
 
@@ -61,7 +60,7 @@ def test_timeout_504(monkeypatch):
     # Force extremely small timeout at runtime
     orig = settings.TIMEOUT_SECONDS
     try:
-        settings.TIMEOUT_SECONDS = 0  # immediate timeout
+        settings.TIMEOUT_SECONDS = 0
         r = client.post(
             f"{settings.API_V1_STR}/solve",
             headers={"X-API-Key": settings.API_TOKEN},
@@ -74,9 +73,6 @@ def test_timeout_504(monkeypatch):
 
 
 def test_zz_rate_limit_429():
-    """
-    Keep this LAST-ish (name ensures lexicographic last) to avoid affecting other tests.
-    """
     client = TestClient(app)
     ok = 0
     hit_429 = 0
@@ -141,7 +137,6 @@ def test_service_none_in_b():
 
 @pytest.mark.xfail(reason="Invalid 'sense' currently propagates from solver; ideal mapping to 422 not implemented yet.")
 def test_service_invalid_sense_future_behavior():
-    # This documents a desired behavior; update when you add validation for 'sense'.
     p = ProblemInput(c=[1, 2], A=[[1, 1]], b=[5], sense="not-a-sense")
     with pytest.raises(BadInput):
         solve_problem(p)

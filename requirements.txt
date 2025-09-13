@@ -31,3 +31,4 @@ uvicorn==0.35.0
 pydantic-settings
 structlog==24.4.0
 slowapi==0.1.9
+sqlalchemy>=2.0

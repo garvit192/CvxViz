@@ -1,14 +1,7 @@
 # app/core/limiting.py
-"""
-Central place for SlowAPI limiter so main.py and routes.py can import
-without causing circular imports.
-"""
-
-# Defaults so app still runs if slowapi isn't installed
 HAVE_SLOWAPI = False
 limiter = None
 
-# Exported symbols (real or stubs)
 def _rate_limit_exceeded_handler(*args, **kwargs): ...
 class RateLimitExceeded(Exception): ...
 
@@ -28,21 +21,15 @@ try:
     from slowapi import Limiter, _rate_limit_exceeded_handler as _rl_handler
     from slowapi.errors import RateLimitExceeded as _RLE
 
-    # Real implementations available
     HAVE_SLOWAPI = True
-    limiter = Limiter(key_func=_key_from_request)  # <-- use our header-aware key func
-    _rate_limit_exceeded_handler = _rl_handler  # type: ignore
-    RateLimitExceeded = _RLE  # type: ignore
+    limiter = Limiter(key_func=_key_from_request)
+    _rate_limit_exceeded_handler = _rl_handler
+    RateLimitExceeded = _RLE
 except Exception:
-    # keep the stubs above so imports elsewhere don't explode
     pass
 
 
 def get_limit_decorator(rule: str):
-    """
-    Return a decorator usable on endpoints. If slowapi isn't present,
-    return a no-op decorator so the app still runs.
-    """
     if limiter:
         return limiter.limit(rule)
 

@@ -3,7 +3,6 @@ from app.core.config import settings
 
 def verify_api_key(x_api_key: str = Header(default=None, alias="X-API-Key")):
     if not x_api_key or x_api_key != settings.API_TOKEN:
-        # 401 is fine; some prefer 403 to avoid disclosing auth state
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid or missing API key",
